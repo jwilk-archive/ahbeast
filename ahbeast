@@ -1,0 +1,167 @@
+#!/usr/bin/perl
+use strict;
+
+use POSIX qw(strftime asctime);
+use IPC::Open3 qw(open3);
+
+my $filename = shift @ARGV;
+my $dir = $filename;
+if ($dir =~ s'/[^/]*$'')
+{ chdir $dir or die; }
+my $filesize = -1;
+
+my $buffer = '';
+
+sub getvar
+{
+  my $var = shift @_;
+  return 'T' . time if $var eq 'now';
+  return 'N-1' if $var eq 'filenum';
+  return "S$filename" if $var eq 'filename';
+  return 'N' . ($filesize / 1024.0) if $var eq 'filesize';
+  return 'Sahbeast' if $var eq 'intname';
+  return 'Sahbeast 0.1' if $var eq 'intfullname';
+  return 'SUB.AHBEAST------' if $var eq 'intid';
+  return 'N0.1' if $var eq 'intver';
+  return $ARGV[$1 - 1] if $var =~ /^param([0-9]+)$/;
+  return 'X';
+}
+
+sub parse
+{
+  my $string = shift @_;
+  substr $string, 0, 2, '';
+  if ($string =~ s/^[?]convert:([a-z0-9-]*)->//)
+  {
+    return ($string, 'convert', $1, $2);
+  }
+  elsif ($string =~ s/^(PUT|INT|OPT|SCR) *//)
+  {
+    my $q;
+    my @result = ($1);
+    do
+    {
+      $q = '?';
+      if ($string =~ s/^"(.*?[^\\])"//)
+      {
+        $q = $1;
+        $q =~ s/(\$|\@)/\\\1/;
+        $q = eval "\"S$q\"";
+      }
+      elsif ($string =~ s/^(-?[0-9]+(\.[0-9]+)?([eE][0-9]+)?)//)
+      {
+        $q = eval "'N' . $1";
+      }
+      elsif ($string =~ s'^((\\([0-9]+|[?]))+)'')
+      {
+        my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday) = localtime;
+        $year += 1900;
+        $mon++;
+        $q = $1;
+        $q =~ s/\\/:/g;
+        $q =~ s/^:[?]/:$year:$mon:$mday/;
+        $q =~ s/:[?]/:$hour:$min:$sec:0/;
+        my @time = map { int $_ } split(/:/, $q);
+        $q = strftime "T%s", $time[6], $time[5], $time[4], $time[3], $time[2]-1, $time[1]-1900;
+      }
+      elsif ($string =~ s'^@([a-z0-9]*)'')
+      {
+        $q = getvar $1;
+      }
+      push @result, $q if $q ne '?';
+    }
+    while ($string =~ s/^,//);
+    $string =~ s/.*?->//;
+    unshift @result, $string;
+    return @result;
+  }
+  elsif ($string =~ s/.*?->//)
+  {
+    return ($string, 'COMMENT');
+  }
+  else
+  {
+    return (undef, 'ERROR');
+  }
+}
+
+sub ah_put
+{
+  $_ = shift @_;
+  if (s/^(S|N)//)
+  { $buffer .= $_; }
+  elsif (s/^T//)
+  { $buffer .= asctime(localtime $_); }
+}
+
+sub ah_int
+{
+  local *FH;
+  my $filename = shift @_;
+  my $dest = shift @_;
+  my $arguments = shift @_;
+  my ($readfd, $writefd);
+  if ($dest ne 'X')
+  {
+    $dest = '/dev/null' unless $dest =~ s/^S//;
+    open FH, '>', $dest or die;
+    $readfd = '>&FH';
+  }
+  $filename = '/dev/null' unless $filename =~ s/^S//;
+  my $pid = open3 $writefd, $readfd, '>&STDERR', $0, $filename, @{$arguments} or die;
+  if ($dest eq 'X')
+  {
+    $buffer .= $_ while <$readfd>;
+  }
+  close $writefd;
+  waitpid $pid, 0;
+}
+
+local $/;
+open FILE, '<', $filename;
+my $content = <FILE>;
+$filesize = length $content;
+close FILE;
+
+my $recode;
+my $i;
+while (($i = index ($content, '<-')) >= 0)
+{
+  $buffer .= substr($content, 0, $i, '');
+  my @result = parse $content;
+  $content = shift @result;
+  my $atag = shift @result;
+  if ($atag eq 'PUT')
+  {
+    ah_put shift(@result);
+    next;
+  }
+  if ($atag eq 'INT')
+  {
+    my $filename = shift @result;
+    my $dest = shift @result;
+    ah_int $filename, $dest, \@result;
+    next;
+  }
+  if ($atag eq 'convert')
+  {
+    my $ckind = shift @result;
+    $recode = 'Windows-1250..ISO-8859-2', next if $ckind eq 'pl-win-iso';
+    $recode = 'Windows-1250..UTF-8', next if $ckind eq 'pl-win-utf8';
+    $recode = 'Windows-1250..HTML', next if $ckind eq 'pl-win-ent';
+  }
+}
+$buffer .= $content;
+
+unless (defined $recode)
+{
+  print $buffer;
+}
+else
+{
+  open RECODE, '|-', '/usr/bin/recode', $recode;
+  print RECODE $buffer;
+  close RECODE;
+}
+
+# vim:ts=2 sw=2 et
