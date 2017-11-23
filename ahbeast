@@ -1,4 +1,8 @@
 #!/usr/bin/env perl
+
+# Copyright © 2005 Jakub Wilk <jwilk@jwilk.net>
+# SPDX-License-Identifier: MIT
+
 use strict;
 
 use POSIX qw(strftime asctime);
